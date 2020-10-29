@@ -160,6 +160,7 @@ class Config:
         backlog=2048,
         timeout_keep_alive=5,
         timeout_notify=30,
+        timeout_task=3,
         callback_notify=None,
         ssl_keyfile=None,
         ssl_certfile=None,
@@ -195,6 +196,7 @@ class Config:
         self.backlog = backlog
         self.timeout_keep_alive = timeout_keep_alive
         self.timeout_notify = timeout_notify
+        self.timeout_task = timeout_task
         self.callback_notify = callback_notify
         self.ssl_keyfile = ssl_keyfile
         self.ssl_certfile = ssl_certfile

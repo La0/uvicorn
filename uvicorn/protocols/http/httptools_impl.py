@@ -275,12 +275,21 @@ class HttpToolsProtocol(asyncio.Protocol):
         if existing_cycle is None or existing_cycle.response_complete:
             # Standard case - start processing the request.
             task = self.loop.create_task(self.cycle.run_asgi(app))
+            if self.config.timeout_task > 0:
+                # Cancel a task after a timeout is reached
+                self.loop.call_later(self.config.timeout_task, self.cancel_task, task)
             task.add_done_callback(self.tasks.discard)
             self.tasks.add(task)
         else:
             # Pipelined HTTP requests need to be queued up.
             self.flow.pause_reading()
             self.pipeline.insert(0, (self.cycle, app))
+
+    def cancel_task(self, task):
+        self.logger.info(f"Canceling task {task.get_name()}")
+        self.tasks.discard(task)
+        task.remove_done_callback(self.tasks.discard)
+        task.cancel()
 
     def on_body(self, body: bytes):
         if self.parser.should_upgrade() or self.cycle.response_complete:
@@ -318,6 +327,9 @@ class HttpToolsProtocol(asyncio.Protocol):
             cycle, app = self.pipeline.pop()
             task = self.loop.create_task(cycle.run_asgi(app))
             task.add_done_callback(self.tasks.discard)
+            if self.config.timeout_task > 0:
+                # Cancel a task after a timeout is reached
+                self.loop.call_later(self.config.timeout_task, self.cancel_task, task)
             self.tasks.add(task)
 
     def shutdown(self):
@@ -394,6 +406,15 @@ class RequestResponseCycle:
     async def run_asgi(self, app):
         try:
             result = await app(self.scope, self.receive, self.send)
+        except asyncio.CancelledError:
+            self.logger.warning("Task was canceled")
+            if not self.response_started:
+                await self.send_500_response(504)
+            else:
+                self.transport.close()
+
+            # Re-raise to propagate cancellation
+            raise
         except BaseException as exc:
             msg = "Exception in ASGI application\n"
             self.logger.error(msg, exc_info=exc)
@@ -417,11 +438,11 @@ class RequestResponseCycle:
         finally:
             self.on_response = None
 
-    async def send_500_response(self):
+    async def send_500_response(self, status=500):
         await self.send(
             {
                 "type": "http.response.start",
-                "status": 500,
+                "status": status,
                 "headers": [
                     (b"content-type", b"text/plain; charset=utf-8"),
                     (b"connection", b"close"),
